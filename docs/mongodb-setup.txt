@@ -1,0 +1,103 @@
+MongoDB storage and downloadable Excel reports
+=============================================
+
+The app saves business data directly to MongoDB collections using DATABASE_URL.
+Google Sheets, Drive, Apps Script, service-account keys and scheduled sheet syncs
+are no longer used. Old Google settings in your local .env are ignored.
+Existing Google sheet data is not automatically imported into MongoDB.
+
+Configuration
+-------------
+Set DATABASE_URL to a MongoDB Atlas or replica-set URL with a database name.
+For Atlas, allow this computer's IP in Network Access and create a database user
+with read/write privileges for the chosen database. Preserve Atlas TLS settings.
+For a local server, do not enable TLS unless that server is configured for TLS.
+Do not disable certificate verification to work around a bad TLS configuration.
+
+The app requires transactions to save related records and audit history safely.
+A standalone MongoDB server is rejected with an explicit setup error. Use Atlas
+or a replica set. Existing unrelated containers/databases are not modified.
+
+Optional local development MongoDB:
+  npm run db:up
+  DATABASE_URL="mongodb://127.0.0.1:27018/mnc_targets?replicaSet=mnc-rs"
+The Docker service uses a separate persistent volume and binds only to localhost.
+It initializes a single-node replica set. It has no authentication and is for
+local development only, not deployment or use on an untrusted/shared machine.
+Use a secured MongoDB deployment for production.
+
+Run
+---
+  npm run dev
+or:
+  npm run build
+  npm start
+
+No SQL database, Prisma migration, or manual seed is required. MongoDB indexes,
+the administrator account (created once, see Authentication), and initial achievement categories
+are initialized automatically without replacing existing records.
+
+Prisma is retained only for the existing generated model/query types and Decimal
+arithmetic. The type-generation schema uses SQL-compatible annotations; it is NOT
+the runtime database configuration. Do not run prisma migrate, db push or studio.
+The runtime never constructs a PrismaClient or SQL engine. Money is stored as
+MongoDB Decimal128; business dates are BSON UTC-midnight dates.
+Models use their existing collection names, unique indexes and string IDs.
+Writes use native Mongo operations; multi-record callbacks use a session transaction.
+Concurrent write conflicts produce an explicit retry error; there is no local
+fallback, no silent database replacement and no automatic Google export.
+
+Authentication
+--------------
+The administrator account is stored in MongoDB (users collection, _id
+"static-admin") with a bcrypt-hashed password; the plain password is never stored.
+  ADMIN_EMAIL=<admin email>
+  AUTH_SECRET=<at least 32 random characters>
+First-time setup only: set ADMIN_INITIAL_PASSWORD in .env, start the app and sign in
+once. The password is hashed into MongoDB; then remove ADMIN_INITIAL_PASSWORD from
+.env. It is ignored whenever a password is already stored, so changing it later has
+no effect. (The legacy names STATIC_LOGIN_EMAIL / STATIC_LOGIN_PASSWORD are still
+accepted for this one-time setup.)
+Change the password from the profile menu -> Change password. Changing it signs out
+all other sessions. Logins, failed logins and password changes are in the audit log.
+Employee login accounts are not enabled.
+
+Excel reports
+-------------
+Daily Reports -> Download Excel exports the selected business day.
+Weekly, Monthly & Yearly Reports provides this/last week, month and year, plus a
+custom date range. Weeks run Monday through Sunday. Months and years use calendar
+boundaries. A leap-year export includes all 366 days. Custom ranges are capped at
+366 days. Team, department and employee filters apply to the export.
+
+Downloads are generated from MongoDB only when requested. No Excel files are
+saved on the server or uploaded to Google. The workbook retains the executive
+summary, employee and team performance, daily trend for multi-day ranges,
+achievement details and lead details, with headers, currency/date formats,
+formulas, totals and percentage formatting. CSV exports remain available.
+
+Authenticated API examples:
+  /api/export?format=xlsx&period=daily&date=2026-10-26
+  /api/export?format=xlsx&period=weekly&date=2026-10-26
+  /api/export?format=xlsx&period=monthly&date=2026-10-26
+  /api/export?format=xlsx&period=yearly&date=2024-06-01
+  /api/export?format=xlsx&from=2026-10-01&to=2026-10-15
+  /api/health/database
+
+Downloaded files have the report period and exact date range in their filenames.
+Download failures are shown in the UI instead of opening an error response as
+though it were a spreadsheet.
+
+Validation
+----------
+  npm run typecheck
+  npm test
+  npm run build
+
+For native MongoDB integration tests, set MONGODB_TEST_URL to an isolated test
+replica set before npm test. The suite creates a randomly named mnc_test_*
+database and drops only that generated database afterward. Do not use production
+credentials for tests. Without MONGODB_TEST_URL, live integration tests are
+explicitly skipped; calculation, authentication, date range and Excel tests run.
+The test runner supports Node.js 24 as well as the application's existing Node
+runtime. Stop the dev server before building: both use the .next output directory.

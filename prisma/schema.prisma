@@ -1,0 +1,404 @@
+// Type-generation schema only. Runtime persistence uses the native MongoDB driver,
+// with Decimal128 money and BSON dates. Do not run SQL migrations against DATABASE_URL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  SUPER_ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+enum AllocationMode {
+  ALLOCATED   // individual allocations must sum to the team target
+  INDEPENDENT // team target is a separate management goal
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  PROPOSAL_SENT
+  NEGOTIATION
+  CONVERTED
+  LOST
+  ON_HOLD
+}
+
+enum LeadValidation {
+  VALID
+  PENDING_VALIDATION // e.g. spreadsheet imports; does not count until validated
+  REJECTED
+}
+
+enum LeadActivityType {
+  NOTE
+  CALL
+  EMAIL
+  MEETING
+  FOLLOW_UP
+  STATUS_CHANGE
+  OWNER_CHANGE
+  CREDIT_CHANGE
+  MERGE
+  CREATED
+}
+
+enum SubmissionScope {
+  EMPLOYEE
+  TEAM
+  COMPANY
+}
+
+enum SubmissionStatus {
+  SUBMITTED
+  LOCKED
+  REOPENED
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  role         Role      @default(EMPLOYEE)
+  active       Boolean   @default(true)
+  employeeId   String?   @unique
+  employee     Employee? @relation(fields: [employeeId], references: [id])
+  lastLoginAt  DateTime?
+  /// Incremented on password change; sessions signed with an older value are rejected.
+  sessionVersion    Int       @default(0)
+  passwordChangedAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  auditLogs AuditLog[]
+
+  @@map("users")
+}
+
+model Department {
+  id        String     @id @default(cuid())
+  name      String     @unique
+  createdAt DateTime   @default(now())
+  employees Employee[]
+  teams     Team[]
+
+  @@map("departments")
+}
+
+model Employee {
+  id           String      @id @default(cuid())
+  code         String      @unique
+  name         String
+  email        String?
+  phone        String?
+  designation  String?
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  active       Boolean     @default(true)
+  joinedOn     DateTime?   @db.Date
+  createdById  String?
+  updatedById  String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  archivedAt   DateTime?
+
+  user              User?
+  memberships       TeamMembership[]
+  ledTeams          Team[]                       @relation("TeamLeader")
+  allocations       EmployeeTargetAllocation[]
+  achievements      AchievementEntry[]
+  ownedLeads        Lead[]                       @relation("LeadOwner")
+  creditedLeads     Lead[]                       @relation("LeadCredit")
+  assignmentsFrom   LeadAssignment[]             @relation("AssignFrom")
+  assignmentsTo     LeadAssignment[]             @relation("AssignTo")
+  submissions       DailyReportSubmission[]
+
+  @@index([departmentId])
+  @@index([active])
+  @@map("employees")
+}
+
+model Team {
+  id           String      @id @default(cuid())
+  name         String      @unique
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  leaderId     String?
+  leader       Employee?   @relation("TeamLeader", fields: [leaderId], references: [id])
+  active       Boolean     @default(true)
+  createdById  String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  archivedAt   DateTime?
+
+  memberships  TeamMembership[]
+  plans        TeamTargetPlan[]
+  allocations  EmployeeTargetAllocation[]
+  achievements AchievementEntry[]
+  leads        Lead[]
+  submissions  DailyReportSubmission[]
+
+  @@index([leaderId])
+  @@map("teams")
+}
+
+// Membership history. startDate/endDate are inclusive business dates; endDate null = current.
+model TeamMembership {
+  id          String    @id @default(cuid())
+  teamId      String
+  team        Team      @relation(fields: [teamId], references: [id])
+  employeeId  String
+  employee    Employee  @relation(fields: [employeeId], references: [id])
+  startDate   DateTime  @db.Date
+  endDate     DateTime? @db.Date
+  createdById String?
+  createdAt   DateTime  @default(now())
+
+  @@index([teamId, startDate])
+  @@index([employeeId, startDate])
+  @@map("team_memberships")
+}
+
+// Team-level target for a date. memberSnapshot freezes the roster used for that date.
+model TeamTargetPlan {
+  id               String         @id @default(cuid())
+  date             DateTime       @db.Date
+  teamId           String
+  team             Team           @relation(fields: [teamId], references: [id])
+  mode             AllocationMode @default(ALLOCATED)
+  monetaryTarget   Decimal        @db.Decimal(14, 2)
+  leadTarget       Int
+  allowUnallocated Boolean        @default(false)
+  memberSnapshot   Json           // string[] of employee ids
+  notes            String?
+  assignedById     String?
+  updatedById      String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  allocations EmployeeTargetAllocation[]
+
+  @@unique([date, teamId])
+  @@index([date])
+  @@map("team_target_plans")
+}
+
+// One allocation per employee per business date. teamId/departmentId are snapshots.
+model EmployeeTargetAllocation {
+  id             String          @id @default(cuid())
+  date           DateTime        @db.Date
+  employeeId     String
+  employee       Employee        @relation(fields: [employeeId], references: [id])
+  teamId         String?
+  team           Team?           @relation(fields: [teamId], references: [id])
+  teamPlanId     String?
+  teamPlan       TeamTargetPlan? @relation(fields: [teamPlanId], references: [id])
+  departmentId   String?
+  monetaryTarget Decimal         @db.Decimal(14, 2)
+  leadTarget     Int
+  notes          String?
+  assignedById   String?
+  updatedById    String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@unique([date, employeeId])
+  @@index([date, teamId])
+  @@index([employeeId, date])
+  @@map("employee_target_allocations")
+}
+
+// Configurable categories. countsTowardTarget separates closed business from pipeline/quotations.
+model AchievementCategory {
+  id                 String             @id @default(cuid())
+  code               String             @unique
+  name               String
+  countsTowardTarget Boolean
+  active             Boolean            @default(true)
+  sortOrder          Int                @default(0)
+  entries            AchievementEntry[]
+
+  @@map("achievement_categories")
+}
+
+model AchievementEntry {
+  id                 String              @id @default(cuid())
+  date               DateTime            @db.Date
+  employeeId         String
+  employee           Employee            @relation(fields: [employeeId], references: [id])
+  teamId             String?
+  team               Team?               @relation(fields: [teamId], references: [id])
+  amount             Decimal             @db.Decimal(14, 2)
+  categoryId         String
+  category           AchievementCategory @relation(fields: [categoryId], references: [id])
+  // Frozen at save time from the category rule so history stays stable if rules change.
+  countsTowardTarget Boolean
+  description        String?
+  leadId             String?
+  lead               Lead?               @relation(fields: [leadId], references: [id])
+  referenceNo        String?
+  notes              String?
+  idempotencyKey     String?             @unique
+  createdById        String?
+  updatedById        String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  deletedAt          DateTime?
+
+  @@index([date, employeeId])
+  @@index([date, teamId])
+  @@index([leadId])
+  @@map("achievement_entries")
+}
+
+model Lead {
+  id                 String         @id @default(cuid())
+  companyName        String
+  companyNameNorm    String
+  contactPerson      String?
+  email              String?
+  emailNorm          String?
+  phone              String
+  phoneNorm          String
+  altPhone           String?
+  website            String?
+  industry           String?
+  source             String?
+  estimatedValue     Decimal?       @db.Decimal(14, 2)
+  followUpDate       DateTime?      @db.Date
+  status             LeadStatus     @default(NEW)
+  notes              String?
+  // Lead creation (business) date; the qualifying date for lead targets.
+  leadDate           DateTime       @db.Date
+  ownerId            String
+  owner              Employee       @relation("LeadOwner", fields: [ownerId], references: [id])
+  teamId             String?
+  team               Team?          @relation(fields: [teamId], references: [id])
+  // Attribution: the single employee credited with this lead for target counting.
+  // Fixed at creation; ownership transfers do NOT move the credit (see docs/BUSINESS_RULES.md).
+  creditedEmployeeId String
+  creditedEmployee   Employee       @relation("LeadCredit", fields: [creditedEmployeeId], references: [id])
+  creditedTeamId     String?
+  validation         LeadValidation @default(VALID)
+  countsTowardTarget Boolean        @default(true)
+  mergedIntoId       String?
+  mergedInto         Lead?          @relation("LeadMerge", fields: [mergedIntoId], references: [id])
+  mergedFrom         Lead[]         @relation("LeadMerge")
+  convertedValue     Decimal?       @db.Decimal(14, 2)
+  convertedAt        DateTime?
+  importBatch        String?
+  idempotencyKey     String?        @unique
+  createdById        String?
+  updatedById        String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  deletedAt          DateTime?
+
+  activities   LeadActivity[]
+  assignments  LeadAssignment[]
+  achievements AchievementEntry[]
+
+  @@index([leadDate, creditedEmployeeId])
+  @@index([ownerId])
+  @@index([status])
+  @@index([companyNameNorm])
+  @@index([emailNorm])
+  @@index([phoneNorm])
+  @@map("leads")
+}
+
+// Ownership history (who owned the lead and when).
+model LeadAssignment {
+  id             String    @id @default(cuid())
+  leadId         String
+  lead           Lead      @relation(fields: [leadId], references: [id])
+  fromEmployeeId String?
+  fromEmployee   Employee? @relation("AssignFrom", fields: [fromEmployeeId], references: [id])
+  toEmployeeId   String
+  toEmployee     Employee  @relation("AssignTo", fields: [toEmployeeId], references: [id])
+  reason         String?
+  changedById    String?
+  createdAt      DateTime  @default(now())
+
+  @@index([leadId])
+  @@map("lead_assignments")
+}
+
+// Follow-ups and contact activity — never create a new lead count.
+model LeadActivity {
+  id          String           @id @default(cuid())
+  leadId      String
+  lead        Lead             @relation(fields: [leadId], references: [id])
+  type        LeadActivityType
+  description String
+  createdById String?
+  createdAt   DateTime         @default(now())
+
+  @@index([leadId, createdAt])
+  @@map("lead_activities")
+}
+
+// End-of-day submissions. scopeKey = "EMP:<id>" | "TEAM:<id>" | "COMPANY".
+model DailyReportSubmission {
+  id             String           @id @default(cuid())
+  date           DateTime         @db.Date
+  scope          SubmissionScope
+  scopeKey       String
+  employeeId     String?
+  employee       Employee?        @relation(fields: [employeeId], references: [id])
+  teamId         String?
+  team           Team?            @relation(fields: [teamId], references: [id])
+  status         SubmissionStatus
+  remarks        String?
+  managerRemarks String?
+  snapshot       Json?
+  submittedById  String?
+  submittedAt    DateTime?
+  lockedById     String?
+  lockedAt       DateTime?
+  reopenedById   String?
+  reopenedAt     DateTime?
+  reopenReason   String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@unique([date, scopeKey])
+  @@index([date, scope])
+  @@map("daily_report_submissions")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  action     String
+  entityType String
+  entityId   String?
+  before     Json?
+  after      Json?
+  reason     String?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model AppSetting {
+  key         String   @id
+  value       Json
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+
+  @@map("app_settings")
+}
