@@ -159,12 +159,12 @@ docker run --rm \
   --mount type=bind,source=/etc/letsencrypt,target=/etc/letsencrypt \
   --mount type=bind,source=/var/lib/letsencrypt,target=/var/lib/letsencrypt \
   --mount type=bind,source=$WEBROOT,target=$WEBROOT \
-  $CERTBOT_IMAGE renew --dry-run --non-interactive --cert-name "$DOMAIN" 2>&1 | grep -E "Congratulations|success|fail" || true
+  $CERTBOT_IMAGE renew --dry-run --no-random-sleep-on-renew --non-interactive --cert-name "$DOMAIN" 2>&1 | grep -E "Congratulations|success|fail" || true
 if [ -d /etc/letsencrypt/live/mongodb-ip ]; then
   docker run --rm --publish 127.0.0.1:8888:80 \
     --mount type=bind,source=/etc/letsencrypt,target=/etc/letsencrypt \
     --mount type=bind,source=/var/lib/letsencrypt,target=/var/lib/letsencrypt \
-    $CERTBOT_IMAGE renew --dry-run --non-interactive --cert-name mongodb-ip 2>&1 | grep -E "Congratulations|success|fail" || true
+    $CERTBOT_IMAGE renew --dry-run --no-random-sleep-on-renew --non-interactive --cert-name mongodb-ip 2>&1 | grep -E "Congratulations|success|fail" || true
 fi
 
 echo "== Check"
