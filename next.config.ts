@@ -6,6 +6,8 @@ import { PHASE_DEVELOPMENT_SERVER } from "next/constants";
 export default function config(phase: string): NextConfig {
   return {
     distDir: phase === PHASE_DEVELOPMENT_SERVER ? ".next-dev" : ".next",
+    // Compact self-contained server for the Docker image (see Dockerfile); local `npm start` is unaffected.
+    ...(process.env.BUILD_STANDALONE === "1" ? { output: "standalone" as const } : {}),
     poweredByHeader: false,
     serverExternalPackages: ["exceljs", "mongodb"],
     async headers() {
